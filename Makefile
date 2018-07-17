@@ -1,12 +1,10 @@
 CC              = g++
-#TWAVEFORMBASE	= ../TWaveform-casa
 CCFLAGS         = -g $(shell root-config --cflags)
-INCLUDE         = -I$(shell root-config --incdir) -I$(TWAVEFORMBASE)/WaveBase
+INCLUDE         = -I$(shell root-config --incdir)
 ROOTLIBS        = $(shell root-config --libs)
-LIBDIRS         = -L$(shell root-config --libdir) -L$(TWAVEFORMBASE)/lib
-TWAVEFORMLIB	= -lWaveWaveBase
+LIBDIRS         = -L$(shell root-config --libdir)
 binaryToROOT-NGM3316:	binaryToROOT-NGM3316.cc
-		$(CC) $(CCFLAGS) $(INCLUDE) $(LIBDIRS) $(ROOTLIBS) $(TWAVEFORMLIB) \
+		$(CC) $(CCFLAGS) $(INCLUDE) $(LIBDIRS) $(ROOTLIBS) \
 		-o binaryToROOT-NGM3316 binaryToROOT-NGM3316.cc
 
 clean:
