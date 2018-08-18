@@ -170,12 +170,12 @@ Int_t main( Int_t argc, char** argv ) {
             break;
         }
         
-        // skip the packet header for the spill
-        // this is two words
-        inFile.read( bufferPointer, 8 );
-        
         for (Int_t cardNumber = 0; cardNumber < numCards; cardNumber++) {
         
+			// skip the packet header for the spill
+			// this is two words
+			inFile.read( bufferPointer, 8 );
+
         	// now that we're inside of the spill, we have to parse data for each channel
         	for( Int_t channelNumber = 0; channelNumber < channelsPerCard; channelNumber++ ) {
             
