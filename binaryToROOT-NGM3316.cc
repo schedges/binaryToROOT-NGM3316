@@ -1,4 +1,4 @@
-//
+﻿//
 //  binaryConverter-NGM3316.cc
 //  
 //
@@ -41,7 +41,7 @@ Int_t main( Int_t argc, char** argv ) {
 		exit(0);
 	}
     
-    UShort_t numCards=1;
+    UShort_t numCards=2;
     UShort_t channelsPerCard=16;
     
     TString inputFilename(argv[1]);
@@ -95,7 +95,7 @@ Int_t main( Int_t argc, char** argv ) {
     
     UInt_t readBuffer[4096];
     char* bufferPointer = (char*)readBuffer;
-    
+
     UInt_t tmpWord;
     
     TTree* unsortedTree = new TTree( "unsortedTree", baseName );
@@ -139,15 +139,25 @@ Int_t main( Int_t argc, char** argv ) {
     UInt_t packetWords;
     UInt_t eventWordsFromFormatBits;
     
+	Bool_t incompleteDumpFlag=0;
+
     Long64_t spillNumber = 0;
     
-    inFile.open( inputFilename.Data(), ifstream::in );
-    
+    inFile.open( inputFilename.Data(), ifstream::in ); 
+
+	//Get size of file, from:
+	//https://stackoverflow.com/questions/2409504/using-c-filestreams-fstream-how-can-you-determine-the-size-of-a-file
+	inFile.ignore(std::numeric_limits<std::streamsize>::max());
+	std::streamsize bitsInFile = inFile.gcount();
+	inFile.clear();
+	inFile.seekg(0,std::ios_base::beg);
+
     printf( "Processing %s...\n", inputFilename.Data() );
-    
+
     // seek past the header at the start of the binary file
     // 100 words = 400 bytes
     inFile.seekg( 400 );
+	bitsInFile-=400;
     
     printf( "Header seeked through..\n" );
     
@@ -155,6 +165,7 @@ Int_t main( Int_t argc, char** argv ) {
         // we're at the start of a spill
         // read 10 word spill header
         inFile.read( bufferPointer, 40 );
+		bitsInFile-=40;
         
         if( DEBUG ) {
             // if we're debugging, print out the first 10 words of the first spill
@@ -175,21 +186,34 @@ Int_t main( Int_t argc, char** argv ) {
 			// skip the packet header for the spill
 			// this is two words
 			inFile.read( bufferPointer, 8 );
+			bitsInFile-=8;
 
         	// now that we're inside of the spill, we have to parse data for each channel
         	for( Int_t channelNumber = 0; channelNumber < channelsPerCard; channelNumber++ ) {
             
 				// read in the packet header for the channel
 				inFile.read( bufferPointer, 32 );
+				bitsInFile-=32;
 			
 				// from the channel info packet header, we can determine the size of the packet data
 				memcpy( &tmpWord, &readBuffer[7], 4 );
 				packetWords = tmpWord;
+				bitsInFile-=(packetWords*4);
+				
 			
 				if( DEBUG ) {
+					std::cout<<"Bits in file before digitizer dump: "<<bitsInFile+packetWords*4<<std::endl;
 					printf( "Number of words in packet for channel %i in spill %llu: \t %u\n", channelNumber, spillNumber, packetWords );
+					std::cout<<"Bits in file after digitizer dump: "<<bitsInFile<<std::endl;
 				}
 			
+				//Check if more words are expected than are in file:
+				if (bitsInFile < 40) {
+					incompleteDumpFlag=true;
+					std::cout<<"Found incomplete dump, remaining data not added to TTree"<<std::endl;
+					break;
+				}
+				
 				while( packetWords > 0 ) {
 				
 					if( index % 100000 == 0 ) {
@@ -309,7 +333,7 @@ Int_t main( Int_t argc, char** argv ) {
 						maxEnergyValue = 0;
 					}
 				
-					// the next word will determine the number of sample words we read
+					// the next word will determine the number of sample words we read	
 					inFile.read( (char*)&tmpWord, 4 );
 					packetWords -= 1;
 				
@@ -336,18 +360,6 @@ Int_t main( Int_t argc, char** argv ) {
 					//                    packetWords -= 1;
 					mawTestData = 0;
 				
-				
-					//If run stopped during spill writing, the program can crash
-					//This isn't a great fix, since we will have partial data from the 
-					//channels before this and nothing from this or channels after, but
-					//it will allow it to run. A better solution is to only add files to
-					//the TTree once we're sure we've reached the end of the last channel 
-					//in the spill
-					if (inFile.fail()) {
-						break;
-					}
-
-				
 					unsortedTree->Fill();
 					index++;
 				}
@@ -356,43 +368,43 @@ Int_t main( Int_t argc, char** argv ) {
         
         
         
+        if (incompleteDumpFlag==false) {
+		    // now we do the time ordering of the spill
+		    if( DEBUG ) {
+		        printf( "Creating TTree index for spill %lli\n", spillNumber );
+		        time(&startTime);
+		    }
+		    unsortedTree->BuildIndex( "timestamp" );
+		    TTreeIndex* treeIndex = (TTreeIndex*)unsortedTree->GetTreeIndex();
+		    if( DEBUG ) {
+		        time(&endTime);
+		        printf( "Index created for spill %lli in %i seconds\n", spillNumber, (Int_t)difftime(endTime, startTime) );
+		    }
+		    
+		    if( DEBUG ) {
+		        printf( "Tree index contains %lli entries\n", treeIndex->GetN() );
+		    }
+		    
+		    for( Int_t i = 0; i < treeIndex->GetN(); i++ ) {
+		        
+		        unsortedTree->GetEntry( treeIndex->GetIndex()[i] );
+		        
+		        if( DEBUG ) {
+		            printf( "%i-th event recalled is index %lli\n", i, treeIndex->GetIndex()[i] );
+		        }
+		        
+		        sis3316tree->Fill();
+		        
+		    }
         
-        // now we do the time ordering of the spill
-        if( DEBUG ) {
-            printf( "Creating TTree index for spill %lli\n", spillNumber );
-            time(&startTime);
+        
+        
+        
+		    spillNumber++;
+		    
+		    treeIndex->Delete();
+		    unsortedTree->Reset();
         }
-        unsortedTree->BuildIndex( "timestamp" );
-        TTreeIndex* treeIndex = (TTreeIndex*)unsortedTree->GetTreeIndex();
-        if( DEBUG ) {
-            time(&endTime);
-            printf( "Index created for spill %lli in %i seconds\n", spillNumber, (Int_t)difftime(endTime, startTime) );
-        }
-        
-        if( DEBUG ) {
-            printf( "Tree index contains %lli entries\n", treeIndex->GetN() );
-        }
-        
-        for( Int_t i = 0; i < treeIndex->GetN(); i++ ) {
-            
-            unsortedTree->GetEntry( treeIndex->GetIndex()[i] );
-            
-            if( DEBUG ) {
-                printf( "%i-th event recalled is index %lli\n", i, treeIndex->GetIndex()[i] );
-            }
-            
-            sis3316tree->Fill();
-            
-        }
-        
-        
-        
-        
-        spillNumber++;
-        
-        treeIndex->Delete();
-        unsortedTree->Reset();
-        
     }
     
     inFile.close();
