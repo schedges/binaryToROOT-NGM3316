@@ -1,4 +1,4 @@
-﻿//
+//
 //  binaryConverter-NGM3316.cc
 //  
 //
@@ -27,8 +27,49 @@
 #include "TTree.h"
 #include "TMath.h"
 #include "TTreeIndex.h"
+#include "TTemplWaveform.hh"
+#include "SystemOfUnits.hh"
 
 using namespace std;
+
+
+//
+//
+// ASSUMING SAMPLING FREQUENCY OF 250 MS/s
+// ASSUMING WAVEFORMS SHORTER THAN 65536 SAMPLES
+//
+//
+
+
+
+// global buffer for waveforms
+// so we don't have to reallocate it every time
+Short_t* waveformBuffer;
+
+
+// the file pointer supplied should already have the location pointer set correctly..
+TTemplWaveform<Short_t>* getWaveformForChannel( ifstream* inFile, UInt_t* packetWords, UInt_t nSamples ) {
+    
+    UInt_t tmpWord;
+    
+    for( Int_t i = 0; i < (nSamples / 2); i++ ) {
+        inFile->read( (char*)&tmpWord, 4 );
+        (*packetWords) -= 1;
+        waveformBuffer[i*2] = (Short_t)(tmpWord & 0xffff);
+        waveformBuffer[i*2 + 1] = (Short_t)((tmpWord & 0xffff0000) >> 16);
+    }
+    
+    TTemplWaveform<Short_t>* wave = new TTemplWaveform<Short_t>( waveformBuffer, nSamples );
+    wave->SetSamplingFreq( 250 * CLHEP::megahertz );
+    
+    if(!wave) {
+        printf("problem making wave!\n");
+    }
+    return wave;
+}
+
+
+
 
 Int_t main( Int_t argc, char** argv ) {
     
@@ -41,10 +82,13 @@ Int_t main( Int_t argc, char** argv ) {
 		exit(0);
 	}
     
-    UShort_t numCards=2;
+    UShort_t numCards=1;
     UShort_t channelsPerCard=16;
     
+    waveformBuffer = new Short_t[65536];
+    
     TString inputFilename(argv[1]);
+    
     
     // check to see if the input file ends in '.bin' extension
     // if it doesn't, exit the program - user probably entered something wrong
@@ -91,11 +135,13 @@ Int_t main( Int_t argc, char** argv ) {
     Bool_t mawTestFlag;
     Bool_t pileupFlag;
     UInt_t nSamples;
-    UShort_t waveform[65536];
+//    UShort_t waveform[65536];
+    TTemplWaveform<Short_t>* wave;
+    TTemplWaveform<Short_t>* sortingWave = new TTemplWaveform<Short_t>();
     
     UInt_t readBuffer[4096];
     char* bufferPointer = (char*)readBuffer;
-
+    
     UInt_t tmpWord;
     
     TTree* unsortedTree = new TTree( "unsortedTree", baseName );
@@ -117,7 +163,14 @@ Int_t main( Int_t argc, char** argv ) {
     unsortedTree->Branch( "mawTestFlag", &mawTestFlag, "mawTestFlag/O" );
     unsortedTree->Branch( "pileupFlag", &pileupFlag, "pileupFlag/O" );
     unsortedTree->Branch( "nSamples", &nSamples, "nSamples/i" );
-    unsortedTree->Branch( "waveform", waveform, "waveform[nSamples]/s");
+    unsortedTree->Branch( "waveform", &sortingWave );
+    
+    
+//    we have this one around just to set the branch up - delete it
+//    wave->Delete();
+
+    
+
     
 	TFile *outFile = new TFile( outfileName,
                                "RECREATE", baseName );
@@ -126,6 +179,11 @@ Int_t main( Int_t argc, char** argv ) {
     TTree* sis3316tree = (TTree*)unsortedTree->CloneTree( 0 );
     sis3316tree->SetName( "sis3316tree" );
     sis3316tree->SetDirectory( outFile );
+    
+
+    
+    
+    
     
     //
 	//	keep track of the time taken to process things
@@ -139,21 +197,21 @@ Int_t main( Int_t argc, char** argv ) {
     UInt_t packetWords;
     UInt_t eventWordsFromFormatBits;
     
-	Bool_t incompleteDumpFlag=0;
 
     Long64_t spillNumber = 0;
     
-    inFile.open( inputFilename.Data(), ifstream::in ); 
-
+	Bool_t incompleteDumpFlag=0;
+    
+    inFile.open( inputFilename.Data(), ifstream::in );
+    
 	//Get size of file, from:
 	//https://stackoverflow.com/questions/2409504/using-c-filestreams-fstream-how-can-you-determine-the-size-of-a-file
 	inFile.ignore(std::numeric_limits<std::streamsize>::max());
 	std::streamsize bitsInFile = inFile.gcount();
 	inFile.clear();
 	inFile.seekg(0,std::ios_base::beg);
-
     printf( "Processing %s...\n", inputFilename.Data() );
-
+    
     // seek past the header at the start of the binary file
     // 100 words = 400 bytes
     inFile.seekg( 400 );
@@ -181,13 +239,15 @@ Int_t main( Int_t argc, char** argv ) {
             break;
         }
         
+        
         for (Int_t cardNumber = 0; cardNumber < numCards; cardNumber++) {
         
-			// skip the packet header for the spill
-			// this is two words
-			inFile.read( bufferPointer, 8 );
-			bitsInFile-=8;
-
+        // skip the packet header for the spill
+        // this is two words for each card
+        inFile.read( bufferPointer, 8 );
+		bitsInFile-=8;
+        
+        
         	// now that we're inside of the spill, we have to parse data for each channel
         	for( Int_t channelNumber = 0; channelNumber < channelsPerCard; channelNumber++ ) {
             
@@ -199,7 +259,6 @@ Int_t main( Int_t argc, char** argv ) {
 				memcpy( &tmpWord, &readBuffer[7], 4 );
 				packetWords = tmpWord;
 				bitsInFile-=(packetWords*4);
-				
 			
 				if( DEBUG ) {
 					std::cout<<"Bits in file before digitizer dump: "<<bitsInFile+packetWords*4<<std::endl;
@@ -216,6 +275,7 @@ Int_t main( Int_t argc, char** argv ) {
 				
 				while( packetWords > 0 ) {
 				
+				
 					if( index % 100000 == 0 ) {
 						time(&endTime);
 						printf( "Processed %lli events in %i seconds\n", index, (Int_t)difftime(endTime, processStartingTime ));
@@ -231,6 +291,7 @@ Int_t main( Int_t argc, char** argv ) {
 					channelID = (UShort_t)((tmpWord & 0xfff0) >> 4);
 				
 					timestamp = (ULong64_t)(tmpWord & 0xffff0000) << 16;
+				
 				
 					memcpy( &tmpWord, &readBuffer[1], 4 );
 				
@@ -333,7 +394,7 @@ Int_t main( Int_t argc, char** argv ) {
 						maxEnergyValue = 0;
 					}
 				
-					// the next word will determine the number of sample words we read	
+					// the next word will determine the number of sample words we read
 					inFile.read( (char*)&tmpWord, 4 );
 					packetWords -= 1;
 				
@@ -349,63 +410,86 @@ Int_t main( Int_t argc, char** argv ) {
 					pileupFlag = (tmpWord & 0x4000000 ) >> 26;
 					mawTestFlag = ( tmpWord & 0x8000000 ) >> 27;
 				
-	                for( Int_t i = 0; i < (nSamples / 2 ); i++ ) {
-	                    inFile.read( (char*)&tmpWord, 4 );
-	                    packetWords -= 1;
-	                    waveform[i*2] = tmpWord & 0xffff;
-	                    waveform[i*2 + 1] = (tmpWord & 0xffff0000) >> 16;
-	                }
+	//                for( Int_t i = 0; i < (nSamples / 2 ); i++ ) {
+	//                    inFile.read( (char*)&tmpWord, 4 );
+	//                    packetWords -= 1;
+	//                    waveform[i*2] = tmpWord & 0xffff;
+	//                    waveform[i*2 + 1] = (tmpWord & 0xffff0000) >> 16;
+	//                }
+				
+					wave = getWaveformForChannel( &inFile, &packetWords, nSamples );
+					unsortedTree->SetBranchAddress("waveform", &wave);
 				
 					//                    inFile.read( (char*)&mawTestData, 4 );
 					//                    packetWords -= 1;
 					mawTestData = 0;
 				
+				
+					//If run stopped during spill writing, the program can crash
+					//This isn't a great fix, since we will have partial data from the 
+					//channels before this and nothing from this or channels after, but
+					//it will allow it to run. A better solution is to only add files to
+					//the TTree once we're sure we've reached the end of the last channel 
+					//in the spill
+					if (inFile.fail()) {
+						break;
+					}
+
+				
 					unsortedTree->Fill();
 					index++;
+				
+					wave->Delete();
 				}
 			}
         }
         
         
         
+        
+        
         if (incompleteDumpFlag==false) {
-		    // now we do the time ordering of the spill
-		    if( DEBUG ) {
-		        printf( "Creating TTree index for spill %lli\n", spillNumber );
-		        time(&startTime);
-		    }
-		    unsortedTree->BuildIndex( "timestamp" );
-		    TTreeIndex* treeIndex = (TTreeIndex*)unsortedTree->GetTreeIndex();
-		    if( DEBUG ) {
-		        time(&endTime);
-		        printf( "Index created for spill %lli in %i seconds\n", spillNumber, (Int_t)difftime(endTime, startTime) );
-		    }
-		    
-		    if( DEBUG ) {
-		        printf( "Tree index contains %lli entries\n", treeIndex->GetN() );
-		    }
-		    
-		    for( Int_t i = 0; i < treeIndex->GetN(); i++ ) {
-		        
-		        unsortedTree->GetEntry( treeIndex->GetIndex()[i] );
-		        
-		        if( DEBUG ) {
-		            printf( "%i-th event recalled is index %lli\n", i, treeIndex->GetIndex()[i] );
-		        }
-		        
-		        sis3316tree->Fill();
-		        
-		    }
-        
-        
-        
-        
-		    spillNumber++;
-		    
-		    treeIndex->Delete();
-		    unsortedTree->Reset();
-        }
-    }
+			// now we do the time ordering of the spill
+			if( DEBUG ) {
+				printf( "Creating TTree index for spill %lli\n", spillNumber );
+				time(&startTime);
+			}
+			unsortedTree->BuildIndex( "timestamp" );
+			TTreeIndex* treeIndex = (TTreeIndex*)unsortedTree->GetTreeIndex();
+			if( DEBUG ) {
+				time(&endTime);
+				printf( "Index created for spill %lli in %i seconds\n", spillNumber, (Int_t)difftime(endTime, startTime) );
+			}
+		
+			if( DEBUG ) {
+				printf( "Tree index contains %lli entries\n", treeIndex->GetN() );
+			}
+		
+			unsortedTree->SetBranchAddress( "waveform", &sortingWave );
+			sis3316tree->SetBranchAddress("waveform", &sortingWave );
+		
+			for( Int_t i = 0; i < treeIndex->GetN(); i++ ) {
+			
+				unsortedTree->GetEntry( treeIndex->GetIndex()[i] );
+			
+				if( DEBUG ) {
+					printf( "%i-th event recalled is index %lli\n", i, treeIndex->GetIndex()[i] );
+				}
+			
+				sis3316tree->Fill();
+			
+			}
+		
+		
+		
+		
+			spillNumber++;
+		
+			treeIndex->Delete();
+			unsortedTree->Reset();
+		
+		}
+	}
     
     inFile.close();
 
@@ -414,8 +498,14 @@ Int_t main( Int_t argc, char** argv ) {
 	cout << "Recorded " << index << " events in "
     << difftime( endTime, processStartingTime ) << " seconds" << endl << endl;
     
+    
+    
+
+    
     unsortedTree->Delete();
     sis3316tree->Write("sis3316tree", TObject::kOverwrite);
     outFile->Close();
-
+    
+    
+    delete [] waveformBuffer;
 }
