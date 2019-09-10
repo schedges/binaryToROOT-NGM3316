@@ -230,7 +230,7 @@ Int_t main( Int_t argc, char** argv ) {
 				
 					channelID = (UShort_t)((tmpWord & 0xfff0) >> 4);
 				
-					timestamp = (ULong64_t)(tmpWord & 0xffff0000) << 16;
+					timestamp = (static_cast<ULong64_t>(tmpWord & 0xffff0000)) << 16;
 				
 					memcpy( &tmpWord, &readBuffer[1], 4 );
 				
